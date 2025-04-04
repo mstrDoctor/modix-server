@@ -1,8 +1,11 @@
 from flask import Flask, jsonify, request
+from flask_cors import CORS
 import json
 import os
 
+# Инициализация приложения
 app = Flask(__name__)
+CORS(app)  # Правильная привязка CORS к приложению
 
 # Путь к папке с данными
 DATA_FOLDER = 'data'
@@ -19,6 +22,8 @@ def load_json(filename):
 def save_json(filename, data):
     with open(os.path.join(DATA_FOLDER, filename), 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+# === Маршруты ===
 
 @app.route('/comments/<file_id>', methods=['GET', 'POST'])
 def comments(file_id):
@@ -57,6 +62,7 @@ def download(file_id):
     save_json('stats.json', stats)
     return jsonify({'status': 'ok'})
 
+# Запуск
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
