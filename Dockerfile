@@ -1,4 +1,4 @@
-web: gunicorn server:app# Базовый образ — Python 3.11
+# Базовый образ — Python 3.11
 FROM python:3.11
 
 # Папка приложения внутри контейнера
