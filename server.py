@@ -1,68 +1,90 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-import json
 import os
+import psycopg2
+import psycopg2.extras
 
-# Инициализация приложения
 app = Flask(__name__)
-CORS(app)  # Правильная привязка CORS к приложению
+CORS(app)
 
-# Путь к папке с данными
-DATA_FOLDER = 'data'
+# Получаем строку подключения из переменной среды
+DATABASE_URL = os.environ.get('DATABASE_URL')
 
-# Загрузка данных
-def load_json(filename):
-    try:
-        with open(os.path.join(DATA_FOLDER, filename), 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
+# Создаём соединение с PostgreSQL
+conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+cursor = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-# Сохранение данных
-def save_json(filename, data):
-    with open(os.path.join(DATA_FOLDER, filename), 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# Инициализация таблиц
+def init_db():
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS comments (
+            file_id TEXT,
+            name TEXT,
+            text TEXT,
+            timestamp BIGINT
+        );
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stats (
+            file_id TEXT PRIMARY KEY,
+            likes INTEGER DEFAULT 0,
+            downloads INTEGER DEFAULT 0
+        );
+    """)
+    conn.commit()
 
-# === Маршруты ===
+init_db()
+
+# === Роуты ===
 
 @app.route('/comments/<file_id>', methods=['GET', 'POST'])
 def comments(file_id):
-    comments = load_json('comments.json')
     if request.method == 'GET':
-        return jsonify(comments.get(file_id, []))
+        cursor.execute("SELECT name, text, timestamp FROM comments WHERE file_id = %s", (file_id,))
+        comments = cursor.fetchall()
+        return jsonify([dict(c) for c in comments])
     else:
         data = request.json
-        comments.setdefault(file_id, []).append({
-            'name': data.get('name', 'Аноним'),
-            'text': data.get('text', ''),
-            'timestamp': int(os.times()[4] * 1000)
-        })
-        save_json('comments.json', comments)
-        return jsonify({'status': 'ok'})
+        cursor.execute("""
+            INSERT INTO comments (file_id, name, text, timestamp)
+            VALUES (%s, %s, %s, extract(epoch from now()) * 1000)
+        """, (file_id, data.get("name", "Аноним"), data.get("text", "")))
+        conn.commit()
+        return jsonify({"status": "ok"})
 
 @app.route('/like/<file_id>', methods=['POST'])
 def like(file_id):
-    stats = load_json('stats.json')
-    stats.setdefault(file_id, {'likes': 0, 'downloads': 0})
-    stats[file_id]['likes'] += 1
-    save_json('stats.json', stats)
-    return jsonify({'likes': stats[file_id]['likes']})
+    cursor.execute("""
+        INSERT INTO stats (file_id, likes, downloads)
+        VALUES (%s, 1, 0)
+        ON CONFLICT (file_id) DO UPDATE SET likes = stats.likes + 1
+    """, (file_id,))
+    conn.commit()
+
+    cursor.execute("SELECT likes FROM stats WHERE file_id = %s", (file_id,))
+    likes = cursor.fetchone()["likes"]
+    return jsonify({"likes": likes})
 
 @app.route('/stats/<file_id>', methods=['GET'])
-def stats(file_id):
-    stats = load_json('stats.json')
-    file_stats = stats.get(file_id, {'likes': 0, 'downloads': 0})
-    return jsonify(file_stats)
+def get_stats(file_id):
+    cursor.execute("SELECT likes, downloads FROM stats WHERE file_id = %s", (file_id,))
+    row = cursor.fetchone()
+    if row:
+        return jsonify(dict(row))
+    else:
+        return jsonify({"likes": 0, "downloads": 0})
 
 @app.route('/files/<file_id>', methods=['GET'])
 def download(file_id):
-    stats = load_json('stats.json')
-    stats.setdefault(file_id, {'likes': 0, 'downloads': 0})
-    stats[file_id]['downloads'] += 1
-    save_json('stats.json', stats)
-    return jsonify({'status': 'ok'})
+    cursor.execute("""
+        INSERT INTO stats (file_id, likes, downloads)
+        VALUES (%s, 0, 1)
+        ON CONFLICT (file_id) DO UPDATE SET downloads = stats.downloads + 1
+    """, (file_id,))
+    conn.commit()
+    return jsonify({"status": "ok"})
 
 # Запуск
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
